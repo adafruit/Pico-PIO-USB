@@ -14,9 +14,11 @@ target_compile_options(${target_name} PRIVATE -Wall -Wextra)
 
 # Host isochronous IN support. With a ring buffer the host collects packets
 # every frame and the application drains them with normal endpoint
-# transfers. Set to 0 (cmake -DHOST_ISO_MIC_RING_SIZE=0) for packet mode,
-# where each transfer returns exactly one packet.
-set(HOST_ISO_MIC_RING_SIZE 4096 CACHE STRING "Isochronous ring buffer size in bytes, 0 for packet mode")
+# transfers. The ring storage is supplied at runtime with
+# pio_usb_host_set_iso_ring(); this only sets the size of the example's
+# static buffer. Set to 0 (cmake -DHOST_ISO_MIC_RING_SIZE=0) for packet
+# mode, where no ring is set and each transfer returns exactly one packet.
+set(HOST_ISO_MIC_RING_SIZE 4096 CACHE STRING "Isochronous ring buffer size in bytes (power of two >= 2048), 0 for packet mode")
 
 # pico_pio_usb is an INTERFACE library, so these definitions apply to its
 # sources too.
@@ -24,7 +26,7 @@ target_compile_definitions(${target_name} PRIVATE
   # use tinyusb implementation
   PIO_USB_USE_TINYUSB
   PIO_USB_HOST_ISOCHRONOUS=1
-  PIO_USB_ISO_RING_SIZE=${HOST_ISO_MIC_RING_SIZE}
+  HOST_ISO_MIC_RING_SIZE=${HOST_ISO_MIC_RING_SIZE}
   )
 
 option(HOST_ISO_MIC_DEBUG "Print low-level endpoint state once a second" OFF)

@@ -183,8 +183,8 @@ uint8_t __no_inline_not_in_flash_func(pio_usb_bus_wait_handshake)(pio_port_t* pp
   return pp->usb_rx_buffer[1];
 }
 
-int __no_inline_not_in_flash_func(pio_usb_bus_receive_packet_and_handshake)(
-    pio_port_t *pp, uint8_t handshake) {
+int __no_inline_not_in_flash_func(pio_usb_bus_receive_packet_and_handshake_limit)(
+    pio_port_t *pp, uint8_t handshake, uint16_t max_payload) {
   uint16_t crc = 0xffff;
   uint16_t crc_prev = 0xffff;
   uint16_t crc_prev2 = 0xffff;
@@ -195,6 +195,11 @@ int __no_inline_not_in_flash_func(pio_usb_bus_receive_packet_and_handshake)(
   // the CRC keeps rolling). Unsigned so that if it ever wraps it indexes back
   // into the buffer instead of going negative and writing below it.
   uint16_t idx = 0;
+  if (max_payload > rx_buf_len - 4) {
+    return -1;
+  }
+  // SYNC, PID, payload, CRC16
+  const uint16_t max_packet_len = max_payload + 4;
 
   // Per USB Specs 7.1.18 for turnaround: We must wait at least 2 bit times for inter-packet delay.
   // This is essential for working with LS device specially when we overlocked the mcu.
@@ -228,9 +233,12 @@ int __no_inline_not_in_flash_func(pio_usb_bus_receive_packet_and_handshake)(
   while (1) {
     if (pio_sm_get_rx_fifo_level(pio_usb_rx, sm_rx)) {
       uint8_t data = pio_sm_get(pio_usb_rx, sm_rx) >> 24;
-      if (idx < rx_buf_len) {
-        usb_rx_buffer[idx] = data;
+      if (idx >= max_packet_len) {
+        // Oversize packet: give up before any handshake, so the device
+        // resends instead of the host acknowledging data it threw away.
+        return -1;
       }
+      usb_rx_buffer[idx] = data;
       start = get_time_us_32(); // reset timeout when a byte is received
 
       if (idx >= 2) {
@@ -320,6 +328,14 @@ int __no_inline_not_in_flash_func(pio_usb_bus_receive_packet_and_handshake)(
   }
 
   return -1;
+}
+
+int __no_inline_not_in_flash_func(pio_usb_bus_receive_packet_and_handshake)(
+    pio_port_t *pp, uint8_t handshake) {
+  // Anything that fits the receive buffer. Callers clamp to the endpoint
+  // and application buffer sizes themselves.
+  return pio_usb_bus_receive_packet_and_handshake_limit(
+      pp, handshake, sizeof(pp->usb_rx_buffer) - 4);
 }
 
 static __always_inline void add_pio_host_rx_program(PIO pio,

@@ -35,9 +35,10 @@
 //
 // The host supports two isochronous IN modes, selected in CMakeLists.txt:
 //
-// PIO_USB_ISO_RING_SIZE > 0 (default here): the host polls the endpoint
-// every frame from the moment the first transfer is queued and stores each
-// packet in a ring buffer as a record:
+// HOST_ISO_MIC_RING_SIZE > 0 (default here): the example hands the host a
+// ring buffer with pio_usb_host_set_iso_ring(). The host then polls the
+// endpoint every frame from the moment the first transfer is queued and
+// stores each packet in the ring as a record:
 //
 //   2 bytes little-endian length, then the packet data
 //   length 0xFFFF: one or more packets were lost (CRC error or ring full)
@@ -51,11 +52,11 @@
 // resumes the stream with SET_INTERFACE. The example stops polling before
 // pausing.
 //
-// PIO_USB_HOST_ISOCHRONOUS=1 with PIO_USB_ISO_RING_SIZE=0: every frame
-// completes the queued transfer with one packet (possibly empty) or an
-// error. The application must re-queue within the frame to catch the next
-// packet, so this mode misses packets when the host task is slow. It is
-// useful to see exactly what the device does frame by frame.
+// HOST_ISO_MIC_RING_SIZE=0: no ring is supplied, and every frame completes
+// the queued transfer with one packet (possibly empty) or an error. The
+// application must re-queue within the frame to catch the next packet, so
+// this mode misses packets when the host task is slow. It is useful to see
+// exactly what the device does frame by frame.
 //
 // For TinyUSB roothub port0 is native usb controller, roothub port1 is
 // pico-pio-usb.
@@ -72,8 +73,11 @@
 #include "pio_usb.h"
 #include "tusb.h"
 
-#if PIO_USB_ISO_RING_SIZE
+#if HOST_ISO_MIC_RING_SIZE
 #define ISO_RING_MODE 1
+// Storage for the host's isochronous packet ring, handed over at startup
+// with pio_usb_host_set_iso_ring(). Must be a power of two >= 2048.
+static uint8_t iso_ring_storage[HOST_ISO_MIC_RING_SIZE];
 #else
 #define ISO_RING_MODE 0
 #endif
@@ -201,6 +205,11 @@ void core1_main() {
   pio_usb_configuration_t pio_cfg = PIO_USB_DEFAULT_CONFIG;
   pio_cfg.pin_dp = PIO_USB_DP_PIN;
   tuh_configure(1, TUH_CFGID_RPI_PIO_USB_CONFIGURATION, &pio_cfg);
+
+#if ISO_RING_MODE
+  // Hand the host the ring storage before any transfer can be queued.
+  pio_usb_host_set_iso_ring(iso_ring_storage, sizeof(iso_ring_storage));
+#endif
 
   // To run USB SOF interrupt in core1, init host stack for pio_usb (roothub
   // port1) on core1

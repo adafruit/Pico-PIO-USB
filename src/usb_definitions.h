@@ -77,6 +77,11 @@ typedef struct {
   uint8_t encoded_data_len;
   uint8_t failed_count;
 
+#if PIO_USB_HOST_BULK_STREAM
+  // Set while a bulk stream ring owns this endpoint. Written by the
+  // application core (start) and cleared by the host frame core (detach).
+  struct pio_usb_bulk_ring *volatile bulk_ring;
+#endif
   uint8_t *app_buf;
   uint16_t total_len;
   uint16_t actual_len;
