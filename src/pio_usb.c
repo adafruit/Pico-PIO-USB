@@ -89,8 +89,9 @@ void __not_in_flash_func(pio_usb_bus_usb_transfer)(pio_port_t *pp,
   }
 
   pio_sm_exec(pp->pio_usb_tx, pp->sm_tx, pp->tx_start_instr);
+  // Clear before starting DMA so a short packet's completion cannot be lost.
+  pp->pio_usb_tx->irq = IRQ_TX_ALL_MASK;
   dma_channel_transfer_from_buffer_now(pp->tx_ch, data, len);
-  pp->pio_usb_tx->irq = IRQ_TX_ALL_MASK; // clear complete flag
 
   io_ro_32 *pc = &pp->pio_usb_tx->sm[pp->sm_tx].addr;
   while ((pp->pio_usb_tx->irq & IRQ_TX_ALL_MASK) == 0) {

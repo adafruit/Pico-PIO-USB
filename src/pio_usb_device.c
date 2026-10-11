@@ -144,6 +144,8 @@ static void __no_inline_not_in_flash_func(usb_device_packet_handler)(void) {
     pio_sm_exec(pp->pio_usb_tx, pp->sm_tx, pp->tx_start_instr);
     volatile bool has_transfer = ep->has_transfer;
 
+    // Clear before starting DMA so a short packet's completion cannot be lost.
+    pp->pio_usb_tx->irq = IRQ_TX_ALL_MASK;
     if (has_transfer) {
       dma_channel_transfer_from_buffer_now(pp->tx_ch, ep->buffer, ep->encoded_data_len);
     } else if (ep->stalled) {
@@ -152,7 +154,6 @@ static void __no_inline_not_in_flash_func(usb_device_packet_handler)(void) {
       dma_channel_transfer_from_buffer_now(pp->tx_ch, nak_encoded, sizeof(nak_encoded));
     }
 
-    pp->pio_usb_tx->irq = IRQ_TX_ALL_MASK; // clear complete flag
     while ((pp->pio_usb_tx->irq & IRQ_TX_ALL_MASK) == 0) {
       continue;
     }
