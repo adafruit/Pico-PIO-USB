@@ -98,13 +98,22 @@ void __not_in_flash_func(pio_usb_bus_usb_transfer)(pio_port_t *pp,
   }
   pp->pio_usb_tx->irq = IRQ_TX_ALL_MASK; // clear complete flag
 
-  // The encoded packet ends at K (PC 1). Polling the transient COMP (PC 2)
-  // can miss it and wait forever after the packet has finished. Like send_pre(),
-  // wait for the sticky FIFO-stall flag so EOP and the trailing symbols finish.
+  // Preserve the early return at COMP so the host can receive a prompt ACK.
+  // If COMP was missed, the trailing K (PC 1) eventually stalls on the FIFO.
+  // Clear any earlier stall, then use that sticky flag to escape the PC wait.
   uint32_t stall_mask = 1 << (PIO_FDEBUG_TXSTALL_LSB + pp->sm_tx);
   pp->pio_usb_tx->fdebug = stall_mask;
-  while (!(pp->pio_usb_tx->fdebug & stall_mask)) {
-    continue;
+  io_ro_32 *pc = &pp->pio_usb_tx->sm[pp->sm_tx].addr;
+  if (pp->low_speed) {
+    while (*pc <= PIO_USB_TX_ENCODED_DATA_COMP &&
+           !(pp->pio_usb_tx->fdebug & stall_mask)) {
+      continue;
+    }
+  } else {
+    while (*pc < PIO_USB_TX_ENCODED_DATA_COMP &&
+           !(pp->pio_usb_tx->fdebug & stall_mask)) {
+      continue;
+    }
   }
 }
 
