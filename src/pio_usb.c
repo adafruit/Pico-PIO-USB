@@ -93,23 +93,18 @@ void __not_in_flash_func(pio_usb_bus_usb_transfer)(pio_port_t *pp,
   pp->pio_usb_tx->irq = IRQ_TX_ALL_MASK;
   dma_channel_transfer_from_buffer_now(pp->tx_ch, data, len);
 
-  io_ro_32 *pc = &pp->pio_usb_tx->sm[pp->sm_tx].addr;
   while ((pp->pio_usb_tx->irq & IRQ_TX_ALL_MASK) == 0) {
     continue;
   }
   pp->pio_usb_tx->irq = IRQ_TX_ALL_MASK; // clear complete flag
 
-  if (pp->low_speed) {
-    // For Low speed host, wait until EOP is fully sent. Otherwise, we can send another packet
-    // before inter-packet delay timeout, which is 2-bit time by USB specs.
-    // For Full speed, our overhead is probably enough without this additional wait.
-    while (*pc <= PIO_USB_TX_ENCODED_DATA_COMP) {
-      continue;
-    }
-  } else {
-    while (*pc < PIO_USB_TX_ENCODED_DATA_COMP) {
-      continue;
-    }
+  // The encoded packet ends at K (PC 1). Polling the transient COMP (PC 2)
+  // can miss it and wait forever after the packet has finished. Like send_pre(),
+  // wait for the sticky FIFO-stall flag so EOP and the trailing symbols finish.
+  uint32_t stall_mask = 1 << (PIO_FDEBUG_TXSTALL_LSB + pp->sm_tx);
+  pp->pio_usb_tx->fdebug = stall_mask;
+  while (!(pp->pio_usb_tx->fdebug & stall_mask)) {
+    continue;
   }
 }
 
