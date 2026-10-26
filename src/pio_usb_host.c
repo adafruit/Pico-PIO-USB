@@ -236,6 +236,7 @@ static void __not_in_flash_func(busy_wait_1_us)(void) {
 }
 
 static void end_transaction(pio_port_t *pp);
+static void park_receiver(const pio_port_t *pp);
 #if PIO_USB_HOST_BULK_STREAM
 static void bulk_stream_detach(endpoint_t *ep, bool disconnected);
 #endif
@@ -525,9 +526,8 @@ static int __no_inline_not_in_flash_func(usb_bulk_ring_transaction)(
   uint32_t const started = get_time_us_32();
   uint8_t const expected = ep->data_id ? USB_PID_DATA1 : USB_PID_DATA0;
 
-  pio_usb_bus_prepare_receive(pp);
+  park_receiver(pp);
   pio_usb_bus_send_token(pp, USB_PID_IN, ep->dev_addr, ep->ep_num);
-  pio_usb_bus_start_receive(pp);
   int const len = pio_usb_bus_receive_packet_and_handshake_limit(pp, USB_PID_ACK, ep->size);
   uint8_t const pid = pp->usb_rx_buffer[1];
   end_transaction(pp);
