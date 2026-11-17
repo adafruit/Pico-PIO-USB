@@ -239,6 +239,7 @@ uint8_t __no_inline_not_in_flash_func(pio_usb_bus_wait_handshake)(pio_port_t* pp
       uint32_t const eop_at = get_time_us_32();
       while (idx < 2 && get_time_us_32() - eop_at <= 2) {
         if (pio_sm_get_rx_fifo_level(pp->pio_usb_rx, pp->sm_rx)) {
+          // The RX state machine shifts each byte into the top of the FIFO word
           pp->usb_rx_buffer[idx++] = pio_sm_get(pp->pio_usb_rx, pp->sm_rx) >> 24;
         }
       }
@@ -270,9 +271,10 @@ static __always_inline bool tx_arm_ack(pio_port_t *pp) {
   }
   PIO const tx = pp->pio_usb_tx;
   uint const sm = pp->sm_tx;
-  // Only arm a state machine that has sent all of its last packet: stalled on
-  // an empty FIFO, so nothing is left in the OSR. TXSTALL is sticky and is set
-  // again right away while the stall lasts.
+  // Only arm when the TX state machine is idle: its FIFO is empty and it is
+  // waiting for more data, so no part of the last packet is still being sent.
+  // The TXSTALL flag stays set until cleared, so clear it and check that it is
+  // set again.
   uint32_t const stall_mask = 1u << (PIO_FDEBUG_TXSTALL_LSB + sm);
   tx->fdebug = stall_mask;
   bool stalled = false;
@@ -394,16 +396,20 @@ static int __no_inline_not_in_flash_func(receive_packet_and_handshake)(
       idx++;
       ack_ready = armed && crc_match && idx >= 4 && idx <= rx_buf_len;
     } else if ((pio_usb_rx->irq & IRQ_RX_COMP_MASK) != 0) {
+      if (pio_sm_get_rx_fifo_level(pio_usb_rx, sm_rx)) {
+        continue; // a byte landed after the check above: read it first
+      }
       if (ack_ready) {
-        // Kept to a flag test: the handshake is already late at 120 MHz
+        // Kept short: the handshake is already late at 120 MHz
         tx_fire_ack(pp);
         return idx - 4;
       }
-      if (handshake == USB_PID_ACK && !waited_late) {
+      bool const packet_ok = idx >= 4 && idx <= rx_buf_len && crc_match;
+      if (handshake == USB_PID_ACK && !waited_late && !packet_ok && idx >= 3) {
         // The EOP detector runs in its own state machine and can flag SE0
         // before the NRZI decoder has pushed the last byte. Give the decoder
-        // a moment before calling the packet bad. Only packets that would
-        // otherwise be dropped pay for this.
+        // a moment before calling the packet bad. Only data packets that
+        // failed the check pay for this; a handshake (idx == 2) is complete.
         waited_late = true;
         uint32_t const eop_at = get_time_us_32();
         while (!pio_sm_get_rx_fifo_level(pio_usb_rx, sm_rx) &&
@@ -424,7 +430,7 @@ static int __no_inline_not_in_flash_func(receive_packet_and_handshake)(
         // Only ACK if crc matches
         // Never ACK a packet longer than the buffer: bytes were dropped, so
         // the stored data is truncated even if the rolling CRC matched.
-        if (idx >= 4 && idx <= rx_buf_len && crc_match) {
+        if (packet_ok) {
           if (armed) {
             tx_fire_ack(pp);
           } else {
