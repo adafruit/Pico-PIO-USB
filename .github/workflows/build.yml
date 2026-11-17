@@ -26,7 +26,7 @@ jobs:
           # pico2 is supported from sdk 2.0.0
           - sdk_version: '1.5.1'
             board: 'pico2'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
     - name: Install ARM GCC
       uses: carlosperate/arm-none-eabi-gcc-action@v1
@@ -51,6 +51,13 @@ jobs:
         git -C $PICO_SDK_PATH/lib/tinyusb checkout master
 
     - name: Build
+      env:
+        # The older SDKs build their host tools (pioasm, picotool) with
+        # cmake_minimum_required below 3.5, which CMake 4 rejects
+        CMAKE_POLICY_VERSION_MINIMUM: 3.5
+        # pioasm before SDK 2.1.1 uses uint8_t without including <cstdint>,
+        # which GCC 15 no longer pulls in through other headers
+        CXXFLAGS: -include cstdint
       run: |
         mkdir -p examples/build
         cd examples/build
