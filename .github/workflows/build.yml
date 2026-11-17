@@ -55,7 +55,7 @@ jobs:
         # The older SDKs build their host tools (pioasm, picotool) with
         # cmake_minimum_required below 3.5, which CMake 4 rejects
         CMAKE_POLICY_VERSION_MINIMUM: 3.5
-        # pioasm before SDK 2.1.1 uses uint8_t without including <cstdint>,
+        # pioasm before SDK 2.2.0 uses uint8_t without including <cstdint>,
         # which GCC 15 no longer pulls in through other headers
         CXXFLAGS: -include cstdint
       run: |
