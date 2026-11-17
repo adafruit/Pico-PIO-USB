@@ -136,6 +136,8 @@ void pio_usb_bus_init(pio_port_t *pp, const pio_usb_configuration_t *c,
 
 void pio_usb_bus_prepare_receive(const pio_port_t *pp);
 int pio_usb_bus_receive_packet_and_handshake(pio_port_t *pp, uint8_t handshake);
+// Host only: receives a packet and ACKs it with a pre-armed TX state machine.
+int pio_usb_bus_receive_packet_and_ack(pio_port_t *pp, uint16_t max_payload);
 int pio_usb_bus_receive_packet_and_handshake_limit(pio_port_t *pp, uint8_t handshake,
                                                    uint16_t max_payload);
 void pio_usb_bus_usb_transfer(pio_port_t *pp, uint8_t *data,

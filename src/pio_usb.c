@@ -183,8 +183,71 @@ uint8_t __no_inline_not_in_flash_func(pio_usb_bus_wait_handshake)(pio_port_t* pp
   return pp->usb_rx_buffer[1];
 }
 
-int __no_inline_not_in_flash_func(pio_usb_bus_receive_packet_and_handshake_limit)(
-    pio_port_t *pp, uint8_t handshake, uint16_t max_payload) {
+// Pre-armed ACK (host, full speed).
+//
+// Starting the ACK from the CPU after the EOP (pio_sm_exec, DMA setup, then
+// the TX program's J and SYNC) puts it 12-15 bit times after the device's
+// EOP at 120-125 MHz. USB 2.0 7.1.18.1 allows the host 7.5, and some devices
+// (Akai MPK mini IV) give up waiting and resend the same DATA packet forever.
+//
+// Instead, while the device is still sending, stop the TX state machine at
+// its idle OUT stall, point it at the start of a packet and preload the ACK
+// into its FIFO. The pins stay released. At the EOP, a good CRC only has to
+// enable the state machine. Anything else puts it back where it was.
+static __always_inline bool tx_arm_ack(pio_port_t *pp) {
+  if (pp->need_pre || pp->low_speed) {
+    return false;
+  }
+  PIO const tx = pp->pio_usb_tx;
+  uint const sm = pp->sm_tx;
+  // Only arm a state machine that has sent all of its last packet: stalled on
+  // an empty FIFO, so nothing is left in the OSR. TXSTALL is sticky and is set
+  // again right away while the stall lasts.
+  uint32_t const stall_mask = 1u << (PIO_FDEBUG_TXSTALL_LSB + sm);
+  tx->fdebug = stall_mask;
+  bool stalled = false;
+  for (int i = 0; i < 32 && !stalled; i++) {
+    stalled = (tx->fdebug & stall_mask) != 0;
+  }
+  if (!stalled || !pio_sm_is_tx_fifo_empty(tx, sm)) {
+    return false;
+  }
+  pio_sm_set_enabled(tx, sm, false);
+  pio_sm_exec(tx, sm, pp->tx_start_instr);
+  tx->irq = IRQ_TX_ALL_MASK; // clear complete flag
+  io_wo_8 *const txf = (io_wo_8 *)&tx->txf[sm];
+  for (uint i = 0; i < sizeof(ack_encoded); i++) {
+    *txf = ack_encoded[i];
+  }
+  return true;
+}
+
+static __always_inline void tx_fire_ack(pio_port_t *pp) {
+  PIO const tx = pp->pio_usb_tx;
+  uint const sm = pp->sm_tx;
+  hw_set_bits(&tx->ctrl, 1u << (PIO_CTRL_SM_ENABLE_LSB + sm));
+
+  while ((tx->irq & IRQ_TX_ALL_MASK) == 0) {
+    continue;
+  }
+  tx->irq = IRQ_TX_ALL_MASK; // clear complete flag
+  io_ro_32 *pc = &tx->sm[sm].addr;
+  while (*pc < PIO_USB_TX_ENCODED_DATA_COMP) {
+    continue;
+  }
+}
+
+static __always_inline void tx_disarm_ack(pio_port_t *pp) {
+  PIO const tx = pp->pio_usb_tx;
+  uint const sm = pp->sm_tx;
+  pio_sm_clear_fifos(tx, sm);
+  // Release the pins (already released) and park at the OUT stall again.
+  pio_sm_exec(tx, sm, pp->tx_reset_instr);
+  hw_set_bits(&tx->ctrl, 1u << (PIO_CTRL_SM_ENABLE_LSB + sm));
+}
+
+static int __no_inline_not_in_flash_func(receive_packet_and_handshake)(
+    pio_port_t *pp, uint8_t handshake, uint16_t max_payload, bool arm_ack) {
   uint16_t crc = 0xffff;
   uint16_t crc_prev = 0xffff;
   uint16_t crc_prev2 = 0xffff;
@@ -215,6 +278,8 @@ int __no_inline_not_in_flash_func(pio_usb_bus_receive_packet_and_handshake_limit
   if (!pio_usb_bus_wait_for_rx_start(pp)) {
     return -1;
   }
+  bool armed = arm_ack && handshake == USB_PID_ACK && tx_arm_ack(pp);
+  bool ack_ready = false;  // armed, and the bytes so far form a valid packet
 
   // Timing Critical: use local variable to reduce de-reference
   PIO pio_usb_rx = pp->pio_usb_rx;
@@ -236,7 +301,7 @@ int __no_inline_not_in_flash_func(pio_usb_bus_receive_packet_and_handshake_limit
       if (idx >= max_packet_len) {
         // Oversize packet: give up before any handshake, so the device
         // resends instead of the host acknowledging data it threw away.
-        return -1;
+        break;
       }
       usb_rx_buffer[idx] = data;
       start = get_time_us_32(); // reset timeout when a byte is received
@@ -249,7 +314,13 @@ int __no_inline_not_in_flash_func(pio_usb_bus_receive_packet_and_handshake_limit
         crc_match = ((crc_receive ^ 0xffff) == crc_prev2);
       }
       idx++;
+      ack_ready = armed && crc_match && idx >= 4 && idx <= rx_buf_len;
     } else if ((pio_usb_rx->irq & IRQ_RX_COMP_MASK) != 0) {
+      if (ack_ready) {
+        // Kept to a flag test: the handshake is already late at 120 MHz
+        tx_fire_ack(pp);
+        return idx - 4;
+      }
       // Exit since we've gotten an EOP.
       // Timing critical: per USB specs, handshake must be sent within 2-7 bit-time strictly
       if (turnaround_in_cycle) {
@@ -261,8 +332,17 @@ int __no_inline_not_in_flash_func(pio_usb_bus_receive_packet_and_handshake_limit
         // Never ACK a packet longer than the buffer: bytes were dropped, so
         // the stored data is truncated even if the rolling CRC matched.
         if (idx >= 4 && idx <= rx_buf_len && crc_match) {
-          pio_usb_bus_usb_transfer(pp, ack_encoded, 5);
+          if (armed) {
+            tx_fire_ack(pp);
+          } else {
+            pio_usb_bus_usb_transfer(pp, ack_encoded, 5);
+          }
           return idx - 4;
+        }
+        if (armed) {
+          // The slow realignment below sends its own ACK, if any
+          tx_disarm_ack(pp);
+          armed = false;
         }
         // Deterministic SYNC realignment. The RX PIO can lock onto a packet a
         // few bits early, so every byte is shifted and the aligned CRC fails on
@@ -323,11 +403,24 @@ int __no_inline_not_in_flash_func(pio_usb_bus_receive_packet_and_handshake_limit
       break;
     } else if (get_time_us_32() - start > 7 ||
                get_time_us_32() - rx_start > 1200) {
-      return -1; // device is probably unplugged, or the line is babbling
+      break; // device is probably unplugged, or the line is babbling
     }
   }
 
+  if (armed) {
+    tx_disarm_ack(pp);
+  }
   return -1;
+}
+
+int __no_inline_not_in_flash_func(pio_usb_bus_receive_packet_and_handshake_limit)(
+    pio_port_t *pp, uint8_t handshake, uint16_t max_payload) {
+  return receive_packet_and_handshake(pp, handshake, max_payload, false);
+}
+
+int __no_inline_not_in_flash_func(pio_usb_bus_receive_packet_and_ack)(
+    pio_port_t *pp, uint16_t max_payload) {
+  return receive_packet_and_handshake(pp, USB_PID_ACK, max_payload, true);
 }
 
 int __no_inline_not_in_flash_func(pio_usb_bus_receive_packet_and_handshake)(
