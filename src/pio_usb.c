@@ -172,6 +172,15 @@ uint8_t __no_inline_not_in_flash_func(pio_usb_bus_wait_handshake)(pio_port_t* pp
 
       start = get_time_us_32(); // reset timeout when a byte is received
     } else if ((pp->pio_usb_rx->irq & IRQ_RX_COMP_MASK) != 0) {
+      // The EOP detector runs in its own state machine and can flag SE0
+      // before the NRZI decoder has pushed the PID byte. Wait for it instead
+      // of dropping a valid ACK, NAK or STALL.
+      uint32_t const eop_at = get_time_us_32();
+      while (idx < 2 && get_time_us_32() - eop_at <= 2) {
+        if (pio_sm_get_rx_fifo_level(pp->pio_usb_rx, pp->sm_rx)) {
+          pp->usb_rx_buffer[idx++] = pio_sm_get(pp->pio_usb_rx, pp->sm_rx) >> 24;
+        }
+      }
       break; // exit if we've gotten an EOP
     }
   }
@@ -280,6 +289,7 @@ static int __no_inline_not_in_flash_func(receive_packet_and_handshake)(
   }
   bool armed = arm_ack && handshake == USB_PID_ACK && tx_arm_ack(pp);
   bool ack_ready = false;  // armed, and the bytes so far form a valid packet
+  bool waited_late = false;
 
   // Timing Critical: use local variable to reduce de-reference
   PIO pio_usb_rx = pp->pio_usb_rx;
@@ -320,6 +330,21 @@ static int __no_inline_not_in_flash_func(receive_packet_and_handshake)(
         // Kept to a flag test: the handshake is already late at 120 MHz
         tx_fire_ack(pp);
         return idx - 4;
+      }
+      if (handshake == USB_PID_ACK && !waited_late) {
+        // The EOP detector runs in its own state machine and can flag SE0
+        // before the NRZI decoder has pushed the last byte. Give the decoder
+        // a moment before calling the packet bad. Only packets that would
+        // otherwise be dropped pay for this.
+        waited_late = true;
+        uint32_t const eop_at = get_time_us_32();
+        while (!pio_sm_get_rx_fifo_level(pio_usb_rx, sm_rx) &&
+               get_time_us_32() - eop_at <= 2) {
+          continue;
+        }
+        if (pio_sm_get_rx_fifo_level(pio_usb_rx, sm_rx)) {
+          continue;
+        }
       }
       // Exit since we've gotten an EOP.
       // Timing critical: per USB specs, handshake must be sent within 2-7 bit-time strictly
