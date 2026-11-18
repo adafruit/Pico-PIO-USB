@@ -528,7 +528,7 @@ static int __no_inline_not_in_flash_func(usb_bulk_ring_transaction)(
 
   park_receiver(pp);
   pio_usb_bus_send_token(pp, USB_PID_IN, ep->dev_addr, ep->ep_num);
-  int const len = pio_usb_bus_receive_packet_and_handshake_limit(pp, USB_PID_ACK, ep->size);
+  int const len = pio_usb_bus_receive_packet_and_ack(pp, ep->size);
   uint8_t const pid = pp->usb_rx_buffer[1];
   end_transaction(pp);
   pp->usb_rx_buffer[0] = 0;
@@ -1234,7 +1234,8 @@ static int __no_inline_not_in_flash_func(usb_in_transaction)(pio_port_t *pp,
   bool const is_iso =
       PIO_USB_HOST_ISOCHRONOUS && (ep->attr & 0x03) == EP_ATTR_ISOCHRONOUS;
   // Isochronous IN has no handshake and no data toggle
-  int receive_len = pio_usb_bus_receive_packet_and_handshake(pp, is_iso ? 0 : USB_PID_ACK);
+  int receive_len = is_iso ? pio_usb_bus_receive_packet_and_handshake(pp, 0)
+                           : pio_usb_bus_receive_packet_and_ack(pp, sizeof(pp->usb_rx_buffer) - 4);
   uint8_t const receive_pid = pp->usb_rx_buffer[1];
 
   if (is_iso && receive_len > 0) {
